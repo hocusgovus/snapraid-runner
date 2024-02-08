@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import configparser
 import logging
 import logging.handlers
 import os.path
@@ -9,6 +8,7 @@ import sys
 import threading
 import time
 import traceback
+import yaml
 from collections import Counter, defaultdict
 from io import StringIO
 
@@ -70,7 +70,7 @@ def send_email(success):
     from email.mime.text import MIMEText
     from email import charset
 
-    if len(config["smtp"]["host"]) == 0:
+    if not config["smtp"]["host"]:
         logging.error("Failed to send email because smtp host is not set")
         return
 
@@ -131,29 +131,36 @@ def finish(is_success):
 
 def load_config(args):
     global config
-    parser = configparser.RawConfigParser()
-    parser.read(args.conf)
     sections = ["snapraid", "logging", "email", "smtp", "scrub"]
     config = dict((x, defaultdict(lambda: "")) for x in sections)
-    for section in parser.sections():
-        for (k, v) in parser.items(section):
-            config[section][k] = v.strip()
+    
+    # Loads YAML config file and adds its data to the config which is a
+    # defaultdict type, this way if a key is not present it doesn't
+    # raise a KeyError but defaults to an empty string
+    with open(args.conf) as config_file_open:
+        config_file = yaml.safe_load(config_file_open)
+    for section in config_file:
+        for (k, v) in config_file[section].items():
+            config[section][k] = v
+    print(config["email"]["sendon"])
 
+    # Checks if these options are of class int (or present at all)
     int_options = [
         ("snapraid", "deletethreshold"), ("logging", "maxsize"),
         ("scrub", "older-than"), ("email", "maxsize"),
     ]
     for section, option in int_options:
-        try:
-            config[section][option] = int(config[section][option])
-        except ValueError:
+        if not isinstance(config[section][option], int):
             config[section][option] = 0
 
-    config["smtp"]["ssl"] = (config["smtp"]["ssl"].lower() == "true")
-    config["smtp"]["tls"] = (config["smtp"]["tls"].lower() == "true")
-    config["scrub"]["enabled"] = (config["scrub"]["enabled"].lower() == "true")
-    config["email"]["short"] = (config["email"]["short"].lower() == "true")
-    config["snapraid"]["touch"] = (config["snapraid"]["touch"].lower() == "true")
+    # Checks if these options are of class bool (or present at all)
+    bool_options = [
+        ("smtp", "ssl"), ("smtp", "tls"), ("scrub", "enabled"),
+        ("email", "short"), ("snapraid", "touch"),
+    ]
+    for section, option in bool_options:
+        if not isinstance(config[section][option], bool):
+            config[section][option] = False
 
     # Migration
     if config["scrub"]["percentage"]:
@@ -202,7 +209,7 @@ def setup_logger():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--conf",
-                        default="snapraid-runner.conf",
+                        default="snapraid-runner.yml",
                         metavar="CONFIG",
                         help="Configuration file (default: %(default)s)")
     parser.add_argument("--no-scrub", action='store_false',
