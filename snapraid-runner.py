@@ -10,11 +10,10 @@ import time
 import traceback
 import yaml
 from collections import Counter, defaultdict
-from io import StringIO
 
 # Global variables
 config = None
-email_log = None
+apprise_log_file = None
 
 
 def tee_log(infile, out_lines, log_level):
@@ -65,63 +64,35 @@ def snapraid_command(command, args={}, *, allow_statuscodes=[]):
         raise subprocess.CalledProcessError(ret, "snapraid " + command)
 
 
-def send_email(success):
-    import smtplib
-    from email.mime.text import MIMEText
-    from email import charset
-
-    if not config["smtp"]["host"]:
-        logging.error("Failed to send email because smtp host is not set")
+def send_apprise_notification(success):
+    try:
+        from apprise import Apprise
+    except ImportError:
+        logging.error("Failed to send notifications because Apprise library is not installed")
         return
 
-    # use quoted-printable instead of the default base64
-    charset.add_charset("utf-8", charset.SHORTEST, charset.QP)
+    appriseObj = Apprise()
+    for url in config["apprise"]["urls"]:
+        appriseObj.add(url)
+
     if success:
-        body = "SnapRAID job completed successfully:\n\n\n"
+        body = "SnapRAID job completed successfully"
     else:
-        body = "Error during SnapRAID job:\n\n\n"
+        body = "Error during SnapRAID job"
 
-    log = email_log.getvalue()
-    maxsize = config['email'].get('maxsize', 500) * 1024
-    if maxsize and len(log) > maxsize:
-        cut_lines = log.count("\n", maxsize // 2, -maxsize // 2)
-        log = (
-            "NOTE: Log was too big for email and was shortened\n\n" +
-            log[:maxsize // 2] +
-            "[...]\n\n\n --- LOG WAS TOO BIG - {} LINES REMOVED --\n\n\n[...]".format(
-                cut_lines) +
-            log[-maxsize // 2:])
-    body += log
-
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = config["email"]["subject"] + \
-        (" SUCCESS" if success else " ERROR")
-    msg["From"] = config["email"]["from"]
-    msg["To"] = config["email"]["to"]
-    smtp = {"host": config["smtp"]["host"]}
-    if config["smtp"]["port"]:
-        smtp["port"] = config["smtp"]["port"]
-    if config["smtp"]["ssl"]:
-        server = smtplib.SMTP_SSL(**smtp)
+    if config["apprise"]["attach-log"]:
+        appriseObj.notify(body=body, attach=apprise_log_file)
+        os.remove(apprise_log_file)
     else:
-        server = smtplib.SMTP(**smtp)
-        if config["smtp"]["tls"]:
-            server.starttls()
-    if config["smtp"]["user"]:
-        server.login(config["smtp"]["user"], config["smtp"]["password"])
-    server.sendmail(
-        config["email"]["from"],
-        [config["email"]["to"]],
-        msg.as_string())
-    server.quit()
+        appriseObj.notify(body=body)
 
 
 def finish(is_success):
-    if ("error", "success")[is_success] in config["email"]["sendon"]:
+    if ("error", "success")[is_success] in config["apprise"]["sendon"]:
         try:
-            send_email(is_success)
+            send_apprise_notification(is_success)
         except Exception:
-            logging.exception("Failed to send email")
+            logging.exception("Failed to send notification")
     if is_success:
         logging.info("Run finished successfully")
     else:
@@ -131,7 +102,7 @@ def finish(is_success):
 
 def load_config(args):
     global config
-    sections = ["snapraid", "logging", "email", "smtp", "scrub"]
+    sections = ["snapraid", "logging", "apprise", "scrub"]
     config = dict((x, defaultdict(lambda: "")) for x in sections)
     
     # Loads YAML config file and adds its data to the config which is a
@@ -142,12 +113,12 @@ def load_config(args):
     for section in config_file:
         for (k, v) in config_file[section].items():
             config[section][k] = v
-    print(config["email"]["sendon"])
 
     # Checks if these options are of class int (or present at all)
     int_options = [
-        ("snapraid", "deletethreshold"), ("logging", "maxsize"),
-        ("scrub", "older-than"), ("email", "maxsize"),
+        ("snapraid", "deletethreshold"),
+        ("logging", "maxsize"),
+        ("scrub", "older-than"),
     ]
     for section, option in int_options:
         if not isinstance(config[section][option], int):
@@ -155,8 +126,9 @@ def load_config(args):
 
     # Checks if these options are of class bool (or present at all)
     bool_options = [
-        ("smtp", "ssl"), ("smtp", "tls"), ("scrub", "enabled"),
-        ("email", "short"), ("snapraid", "touch"),
+        ("snapraid", "touch"),
+        ("apprise", "short"),
+        ("scrub", "enabled"),
     ]
     for section, option in bool_options:
         if not isinstance(config[section][option], bool):
@@ -195,15 +167,17 @@ def setup_logger():
         file_logger.setFormatter(log_format)
         root_logger.addHandler(file_logger)
 
-    if config["email"]["sendon"]:
-        global email_log
-        email_log = StringIO()
-        email_logger = logging.StreamHandler(email_log)
-        email_logger.setFormatter(log_format)
-        if config["email"]["short"]:
-            # Don't send programm stdout in email
-            email_logger.setLevel(logging.INFO)
-        root_logger.addHandler(email_logger)
+    if config["apprise"]["attach-log"]:
+        global apprise_log_file
+        from tempfile import gettempdir
+        from datetime import date
+        apprise_log_file = os.path.join(gettempdir(), f"snapraid-runner_{date.today()}.log")
+        apprise_logger = logging.FileHandler(apprise_log_file)
+        apprise_logger.setFormatter(log_format)
+        if config["apprise"]["short"]:
+            # Don't send programm stdout in notification attachment
+            apprise_logger.setLevel(logging.INFO)
+        root_logger.addHandler(apprise_logger)
 
 
 def main():

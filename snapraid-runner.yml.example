@@ -14,26 +14,17 @@ logging:
   # maximum logfile size in KiB, leave empty for infinite
   maxsize: 5000
 
-email:
-  # when to send an email, comma-separated list of [success, error]
+apprise:
+  # when to send a notification
   sendon: [success, error]
-  # set to false to get full programm output via email
+  # not every service supports attachments, check te apprise wiki for details
+  attach-log: true
+  # set to false to get full programm output in the log file
   short: true
-  subject: "[SnapRAID] Status Report"
-  from: 
-  to:
-  # maximum email size in KiB
-  maxsize: 500
-
-smtp:
-  host:
-  # leave empty for default port
-  port:
-  # set to "true" to activate
-  ssl: false
-  tls: false
-  user:
-  password:
+  # to see all the supporterd services visit https://github.com/caronc/apprise?tab=readme-ov-file#supported-notifications
+  urls:
+    - discord://webhook_id/webhook_token
+    - tgram://bottoken/ChatID
 
 scrub:
   # set to true to run scrub after sync

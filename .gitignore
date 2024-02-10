@@ -1,1 +1,2 @@
-snapraid-runner.conf
+*.yml
+*.log
